@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling", "hatch-requirements-txt"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crash-pkg"
+version = "0.0.1"
+description = "Converted from Jupyter Notebook via lib2notebook2lib"
+authors = [{ name = "Jupyter User", email = "user@example.com" }]
+readme = "README.md"
+requires-python = ">=3.8"
+dynamic = ["dependencies"]
+
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["requirements.txt"]

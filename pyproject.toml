@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling", "hatch-requirements-txt"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lib2notebook2lib"
+version = "0.1.0"
+description = "Bi-directional conversion between Jupyter Notebooks and Hatch-based Python Libraries."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/lib2notebook2lib"
+
+[project.scripts]
+# Registers the CLI command defined in Phase 04
+lib2notebook2lib = "lib2notebook2lib.cli:main"
+
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["requirements.txt"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lib2notebook2lib"]
