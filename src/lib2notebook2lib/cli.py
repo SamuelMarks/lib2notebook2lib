@@ -7,15 +7,18 @@ conversions from Jupyter Notebooks to Python Libraries.
 
 import argparse
 import sys
+import json
 import logging
 from pathlib import Path
 from typing import List, Optional
 
+import libcst as cst
 from pydantic import ValidationError
 
 from .schema import UserConfig
 from .sdk import JupyterToPackage
 from .parser import NotebookReader, DependencyAnalyzer
+from .reverser import LibraryToNotebook
 
 # Configure basic logging for CLI output
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -38,15 +41,31 @@ def parse_args(args: Optional[List[str]]) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "notebook_path", type=Path, help="Path to the source .ipynb file."
+        "notebook_path",
+        type=Path,
+        nargs="?",
+        help="Path to the source .ipynb file (Legacy mode).",
     )
 
     parser.add_argument(
         "--name",
         "-n",
         type=str,
-        required=True,
-        help="Name of the generated python package (PyPI compliant).",
+        help="Name of the generated python package (PyPI compliant). Required for legacy mode.",
+    )
+
+    parser.add_argument(
+        "--audit",
+        nargs="+",
+        type=Path,
+        help="Audit the specified files (verify they are valid notebooks or python files).",
+    )
+
+    parser.add_argument(
+        "--fix",
+        nargs="+",
+        type=Path,
+        help="Fix/Convert the specified files (.ipynb -> package, .py -> .ipynb).",
     )
 
     parser.add_argument(
@@ -123,6 +142,127 @@ def handle_dry_run(config: UserConfig) -> None:
         logger.info("\nNo external dependencies detected.")
 
 
+def handle_audit(paths: List[Path]) -> int:
+    """
+    Validates that the given files are well-formed notebooks or python files.
+
+    Args:
+        paths: A list of file paths to audit.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    has_error = False
+    for path in paths:
+        if not path.exists():
+            logger.error(f"Error: Path does not exist: {path}")
+            has_error = True
+            continue
+
+        try:
+            if path.suffix == ".ipynb":
+                NotebookReader(path)
+                logger.info(f"Audit passed: {path}")
+            elif path.suffix == ".py":
+                # Ensure we can parse it as a valid python module using CST
+                source = path.read_text(encoding="utf-8")
+                cst.parse_module(source)
+                logger.info(f"Audit passed: {path}")
+            else:
+                logger.error(f"Error: Unsupported file type for audit: {path}")
+                has_error = True
+        except Exception as e:
+            logger.error(f"Audit failed for {path}: {e}")
+            has_error = True
+
+    return 1 if has_error else 0
+
+
+def handle_fix(
+    paths: List[Path], dry_run: bool, version: str, author: str, email: str, force: bool
+) -> int:
+    """
+    Converts notebooks to packages or python files to notebooks.
+
+    Args:
+        paths: A list of file paths to fix.
+        dry_run: If True, prints intended actions without writing to disk.
+        version: Package version (used for notebook to package conversion).
+        author: Author name (used for notebook to package conversion).
+        email: Author email (used for notebook to package conversion).
+        force: If True, overwrites existing output directories or files.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
+    has_error = False
+    for path in paths:
+        if not path.exists():
+            logger.error(f"Error: Path does not exist: {path}")
+            has_error = True
+            continue
+
+        try:
+            if path.suffix == ".ipynb":
+                project_name = path.stem
+                output_dir = path.parent
+                target_dir = output_dir / project_name
+
+                if target_dir.exists() and not force and not dry_run:
+                    logger.error(
+                        f"Error: Target directory '{target_dir}' exists. Use --force."
+                    )
+                    has_error = True
+                    continue
+
+                if dry_run:
+                    logger.info(
+                        f"[Dry Run] Would convert {path} to package '{project_name}' at {target_dir}"
+                    )
+                else:
+                    config = UserConfig(
+                        notebook_path=path,
+                        project_name=project_name,
+                        version=version,
+                        author_name=author,
+                        author_email=email,
+                        output_dir=output_dir,
+                    )
+                    converter = JupyterToPackage(config)
+                    created_path = converter.convert()
+                    logger.info(f"Successfully created project at: {created_path}")
+
+            elif path.suffix == ".py":
+                target_path = path.with_suffix(".ipynb")
+                if target_path.exists() and not force and not dry_run:
+                    logger.error(
+                        f"Error: Target file '{target_path}' exists. Use --force."
+                    )
+                    has_error = True
+                    continue
+
+                if dry_run:
+                    logger.info(
+                        f"[Dry Run] Would convert {path} to notebook at {target_path}"
+                    )
+                else:
+                    converter = LibraryToNotebook(path)
+                    notebook_dict = converter.convert()
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        json.dump(notebook_dict, f, indent=2)
+                    logger.info(f"Successfully created notebook at: {target_path}")
+
+            else:
+                logger.error(f"Error: Unsupported file type for fix: {path}")
+                has_error = True
+
+        except Exception as e:
+            logger.error(f"Fix failed for {path}: {e}")
+            has_error = True
+
+    return 1 if has_error else 0
+
+
 def main(args: Optional[List[str]] = None) -> int:
     """
     Main application logic.
@@ -137,6 +277,26 @@ def main(args: Optional[List[str]] = None) -> int:
     """
     parsed_args = parse_args(args)
 
+    if parsed_args.audit:
+        return handle_audit(parsed_args.audit)
+
+    if parsed_args.fix:
+        return handle_fix(
+            parsed_args.fix,
+            parsed_args.dry_run,
+            parsed_args.version,
+            parsed_args.author,
+            parsed_args.email,
+            parsed_args.force,
+        )
+
+    if not parsed_args.notebook_path or not parsed_args.name:
+        logger.error(
+            "Error: --name and notebook_path are required for legacy conversion mode."
+        )
+        return 1
+
+    # Legacy Mode
     # 1. Check Notebook Existence early
     nb_path = parsed_args.notebook_path
     if not nb_path.exists():
